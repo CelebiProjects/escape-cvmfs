@@ -6,7 +6,8 @@ runtime under `/cvmfs/sw.escape.eu/celebi/<version>/`.
 ## Build
 
 The normal build is performed by the `Build Celebi Tarball` GitHub Actions
-workflow. Supply a full, published Celebi commit SHA as `celebi_ref`.
+workflow, which builds inside an AlmaLinux 9 x86_64 container. Supply a full,
+published Celebi commit SHA as `celebi_ref`.
 For a local source checkout:
 
 ```bash
@@ -17,17 +18,20 @@ The output is `celebi-<version>-<commit>.tar.gz` plus a SHA-256 checksum. The
 version is read from the source checkout's `pyproject.toml`; the commit suffix
 makes the CVMFS release label unambiguous while the project is in beta.
 `SOURCE_COMMIT` records the source revision, and `PACKAGE_VERSIONS` lists the
-installed packages. Build deployment artifacts on Linux with Python 3.11.
+installed packages. For local release builds, use EL9 x86_64 and Python 3.11.
 
 ## Deploy
 
 On the CVMFS publisher, deploy the GitHub Actions artifact:
 
 ```bash
-./utils/celebi-cvmfs-updater.sh <GITHUB_TOKEN> <ARTIFACT_ID>
+TOKEN="$GITHUB_TOKEN" ./utils/celebi-cvmfs-updater.sh --set-latest <ARTIFACT_ID>
 ```
 
-Use `--force` only when intentionally replacing the same release label.
+The artifact must contain the tarball and its matching `.sha256` file.
+This checksum verifies integrity within the artifact. Use `--force` to
+replace an existing release label and `--set-latest` to move the default
+symlink. Omit `--set-latest` when publishing a release without promoting it.
 
 ## Use
 
@@ -36,5 +40,8 @@ source /cvmfs/sw.escape.eu/celebi/latest/setup.sh
 celebi-cli --help
 ```
 
-The setup script prefers LCG 107's Python 3.11 and falls back to a compatible
-`python3.11` on `PATH`.
+The setup script checks that the selected interpreter is Python 3.11.
+It defaults to the LCG 107 `x86_64-el9-gcc13-opt` interpreter, or to
+`python3.11` on `PATH` if that CVMFS path is absent. Select another
+compatible interpreter with `CELEBI_PYTHONBIN`. Test imports and the CLI
+on EL9 before promotion to check dependencies with compiled extensions.

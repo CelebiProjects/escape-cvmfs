@@ -10,7 +10,7 @@ on:
         description: Full Celebi commit SHA to bundle
         required: true
       rabbitmq_version:
-        description: Optional conda-forge RabbitMQ version (empty selects current)
+        description: Optional conda-forge RabbitMQ version (empty uses the pinned default)
         required: false
         default: ''
 
@@ -19,8 +19,18 @@ permissions:
 
 jobs:
   build-tarball:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: almalinux:9
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Install EL9 build tools
+        run: |
+          dnf install -y ca-certificates git gzip tar bzip2 which gcc gcc-c++ make
+          dnf clean all
+
       - name: Checkout packaging repository
         uses: actions/checkout@v4
 
@@ -61,15 +71,16 @@ jobs:
       - name: Build tarball
         shell: bash -el {0}
         env:
-          YUKI_SOURCE_DIR: ${{ github.workspace }}/source-yuki
-          CELEBI_SOURCE_DIR: ${{ github.workspace }}/source-celebi
           PYTHON_BIN: python
           CONDA_BIN: conda
           CONDA_PACK_BIN: conda-pack
           RABBITMQ_VERSION: ${{ inputs.rabbitmq_version }}
         run: |
-          chmod +x yuki/make_tarball.sh
-          yuki/make_tarball.sh
+          export YUKI_SOURCE_DIR="$GITHUB_WORKSPACE/source-yuki"
+          export CELEBI_SOURCE_DIR="$GITHUB_WORKSPACE/source-celebi"
+          bash yuki/make_tarball.sh
+          cd yuki
+          sha256sum --check yuki-*.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

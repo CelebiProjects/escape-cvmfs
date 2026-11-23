@@ -12,8 +12,19 @@ permissions:
 
 jobs:
   build-tarball:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: almalinux:9
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Install EL9 build tools
+        run: |
+          dnf install -y ca-certificates git gzip tar gcc gcc-c++ make \
+            python3.11 python3.11-devel python3.11-pip
+          dnf clean all
+
       - name: Checkout packaging repository
         uses: actions/checkout@v4
 
@@ -29,16 +40,14 @@ jobs:
           ref: ${{ inputs.celebi_ref }}
           path: source-celebi
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Build tarball
         env:
-          CELEBI_SOURCE_DIR: ${{ github.workspace }}/source-celebi
+          PYTHON_BIN: python3.11
         run: |
-          chmod +x celebi/make_tarball.sh
-          celebi/make_tarball.sh
+          export CELEBI_SOURCE_DIR="$GITHUB_WORKSPACE/source-celebi"
+          bash celebi/make_tarball.sh
+          cd celebi
+          sha256sum --check celebi-*.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -12,15 +12,18 @@ if [[ -z "$SOURCE_DIR" || ! -f "$SOURCE_DIR/pyproject.toml" ]]; then
 fi
 
 SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
-VERSION="$($PYTHON_BIN - "$SOURCE_DIR/pyproject.toml" <<'PY'
+if ! "$PYTHON_BIN" -I -c 'import sys; sys.exit(sys.version_info[:2] != (3, 11))'; then
+  echo "ERROR: CVMFS build requires Python 3.11 ($PYTHON_BIN)." >&2
+  exit 1
+fi
+VERSION="$("$PYTHON_BIN" - "$SOURCE_DIR/pyproject.toml" <<'PY'
 import pathlib, sys, tomllib
 print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]["version"])
 PY
 )"
-"$PYTHON_BIN" -c 'import sys; assert sys.version_info[:2] == (3, 11), "CVMFS runtime requires Python 3.11"'
 COMMIT="$(git -C "$SOURCE_DIR" rev-parse --short=12 HEAD)"
 LABEL="${CELEBI_LABEL:-${VERSION}-${COMMIT}}"
-[[ "$LABEL" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "ERROR: invalid release label: $LABEL" >&2; exit 1; }
+[[ "$LABEL" =~ ^[A-Za-z0-9._+-]+$ && "$LABEL" != . && "$LABEL" != .. && "$LABEL" != latest ]] || { echo "ERROR: invalid release label: $LABEL" >&2; exit 1; }
 BUILD_ROOT="$SCRIPT_DIR/build-${LABEL}"
 SITE_PACKAGES="$BUILD_ROOT/lib/python3.11/site-packages"
 ARCHIVE="$SCRIPT_DIR/celebi-${LABEL}.tar.gz"
@@ -35,24 +38,45 @@ mkdir -p "$SITE_PACKAGES" "$BUILD_ROOT/bin"
 
 if [[ -d "$SITE_PACKAGES/bin" ]]; then
   cp -a "$SITE_PACKAGES/bin/." "$BUILD_ROOT/bin/"
-  rm -rf "$SITE_PACKAGES/bin"
+  rm -rf "${SITE_PACKAGES:?}/bin"
 fi
 
+# Generate launchers from wheel metadata. pip --target does not preserve
+# the scripts directory on every Python sysconfig layout (including LCG).
+"$PYTHON_BIN" - "$SITE_PACKAGES" "$BUILD_ROOT/bin" celebi celebi-cli celebi-git <<'PYCODE'
+from importlib.metadata import distributions
+from pathlib import Path
+import sys
+
+site, bin_dir, *commands = sys.argv[1:]
+dist = next(
+    (item for item in distributions(path=[site])
+     if item.metadata["Name"].lower() == "celebichrono"),
+    None,
+)
+if dist is None:
+    sys.exit("ERROR: CelebiChrono wheel metadata is missing")
+registered = {ep.name: ep for ep in dist.entry_points if ep.group == "console_scripts"}
+for command in commands:
+    if command not in registered:
+        sys.exit(f"ERROR: missing console entry point: {command}")
+    module, attribute = registered[command].value.split(":", 1)
+    (Path(bin_dir) / (command + ".py")).write_text(
+        "import sys\n"
+        "from importlib import import_module\n"
+        "sys.argv[0] = sys.argv[0].removesuffix('.py')\n"
+        f"entry = import_module({module!r})\n"
+        f"for attribute in {attribute!r}.split('.'):\n"
+        "    entry = getattr(entry, attribute)\n"
+        "sys.exit(entry())\n"
+    )
+PYCODE
+
 for entrypoint in celebi celebi-cli celebi-git; do
-  if [[ ! -f "$BUILD_ROOT/bin/$entrypoint" ]]; then
-    echo "ERROR: expected console entry point was not installed: $entrypoint" >&2
-    exit 1
-  fi
-  tmpfile="$(mktemp)"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf '_celebi_bin_dir="$(cd "$(dirname "$0")" && pwd)"\n'
-    printf 'exec "${CELEBI_PYTHONBIN:?Source setup.sh first}" "${_celebi_bin_dir}/%s.py" "$@"\n' \
-      "$entrypoint"
-  } > "$tmpfile"
-  mv "$tmpfile" "$BUILD_ROOT/bin/${entrypoint}.wrapper"
-  mv "$BUILD_ROOT/bin/$entrypoint" "$BUILD_ROOT/bin/${entrypoint}.py"
-  mv "$BUILD_ROOT/bin/${entrypoint}.wrapper" "$BUILD_ROOT/bin/$entrypoint"
+  cat > "$BUILD_ROOT/bin/$entrypoint" <<'SH'
+#!/usr/bin/env bash
+exec "${CELEBI_PYTHONBIN:?Source setup.sh first}" "$0.py" "$@"
+SH
   chmod +x "$BUILD_ROOT/bin/$entrypoint"
 done
 

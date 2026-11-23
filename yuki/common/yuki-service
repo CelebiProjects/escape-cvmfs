@@ -17,7 +17,9 @@ RABBITMQ_PORT="${RABBITMQ_PORT:-5672}"
 START_TIMEOUT="${YUKI_START_TIMEOUT:-60}"
 
 export YUKIDIR
-export CELERY_BROKER_URL="${CELERY_BROKER_URL:-amqp://127.0.0.1:${RABBITMQ_PORT}}"
+export CELERY_BROKER_URL="amqp://127.0.0.1:5672"
+export RABBITMQ_NODE_IP_ADDRESS=127.0.0.1
+export RABBITMQ_NODE_PORT=5672
 export RABBITMQ_ALLOW_INPUT_NON_SENSITIVE_DATA=1
 export RABBITMQ_CONFIG_FILE="$RABBIT_DIR/rabbitmq.conf"
 export RABBITMQ_MNESIA_BASE="$RABBIT_DIR/mnesia"
@@ -57,8 +59,8 @@ PY
 }
 
 wait_for_port() {
-  local port="$1" label="$2" elapsed=0
-  while ! port_open "$port"; do
+  local port="$1" label="$2" ready="${3:-true}" elapsed=0
+  while ! port_open "$port" || ! "$ready"; do
     if (( elapsed >= START_TIMEOUT )); then
       echo "ERROR: $label did not become ready on port $port after ${START_TIMEOUT}s." >&2
       return 1
@@ -82,23 +84,44 @@ yuki_running() {
   kill -0 "$pid" 2>/dev/null
 }
 
+rabbitmq_owned() {
+  [[ -f "$RABBIT_OWNED_FILE" && -r "$RABBITMQ_PID_FILE" ]] || return 1
+  local pid owner node_pid
+  pid="$(cat "$RABBITMQ_PID_FILE")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  owner="$(ps -o uid= -p "$pid")" || return 1
+  [[ "${owner//[[:space:]]/}" == "$EUID" ]] || return 1
+  node_pid="$("$ROOT/bin/rabbitmqctl" -q -n "$RABBITMQ_NODENAME" \
+    -t 5 eval 'os:getpid().' 2>/dev/null)" || return 1
+  [[ "$node_pid" == "\"$pid\"" ]]
+}
+
 start_rabbitmq() {
   if port_open "$RABBITMQ_PORT"; then
-    echo "RabbitMQ is already available on port $RABBITMQ_PORT."
-    return
+    if rabbitmq_owned; then
+      echo "Yuki's RabbitMQ is already running on port $RABBITMQ_PORT."
+      return
+    fi
+    echo "ERROR: port $RABBITMQ_PORT is occupied by a broker or service outside this Yuki instance." >&2
+    return 1
   fi
 
   echo "Starting RabbitMQ..."
   : > "$RABBIT_LOG"
-  if ! "$ROOT/bin/rabbitmq-server" -detached >> "$RABBIT_LOG" 2>&1; then
-    echo "ERROR: RabbitMQ failed to start. Log: $RABBIT_LOG" >&2
-    tail -n 80 "$RABBIT_LOG" >&2 || true
-    return 1
-  fi
+  rm -f "$RABBITMQ_PID_FILE"
+  # RabbitMQ writes its PID file in foreground mode, including under nohup.
+  nohup "$ROOT/bin/rabbitmq-server" >> "$RABBIT_LOG" 2>&1 < /dev/null &
+  local launcher_pid=$!
   : > "$RABBIT_OWNED_FILE"
-  if ! wait_for_port "$RABBITMQ_PORT" RabbitMQ; then
+  if ! wait_for_port "$RABBITMQ_PORT" RabbitMQ rabbitmq_owned; then
+    echo "ERROR: could not verify the RabbitMQ node started by yuki-service." >&2
     tail -n 80 "$RABBIT_LOG" >&2 || true
-    stop_rabbitmq || true
+    if rabbitmq_owned; then
+      stop_rabbitmq || true
+    else
+      kill -TERM "$launcher_pid" 2>/dev/null || true
+      rm -f "$RABBIT_OWNED_FILE"
+    fi
     return 1
   fi
   echo "RabbitMQ is ready."
@@ -166,6 +189,14 @@ stop_rabbitmq() {
     echo "RabbitMQ was not started by yuki-service; leaving it running."
     return
   fi
+  if ! rabbitmq_owned; then
+    if port_open "$RABBITMQ_PORT"; then
+      echo "ERROR: refusing to stop an unverified RabbitMQ on port $RABBITMQ_PORT." >&2
+      return 1
+    fi
+    rm -f "$RABBIT_OWNED_FILE"
+    return
+  fi
   echo "Stopping RabbitMQ..."
   "$ROOT/bin/rabbitmqctl" -n "$RABBITMQ_NODENAME" shutdown \
     >> "$RABBIT_LOG" 2>&1 || true
@@ -194,8 +225,11 @@ service_start() {
 
 service_status() {
   local failed=0
-  if port_open "$RABBITMQ_PORT"; then
+  if rabbitmq_owned && port_open "$RABBITMQ_PORT"; then
     echo "RabbitMQ: running (port $RABBITMQ_PORT)"
+  elif port_open "$RABBITMQ_PORT"; then
+    echo "RabbitMQ: port $RABBITMQ_PORT occupied by an unverified service"
+    failed=1
   else
     echo "RabbitMQ: stopped"
     failed=1
@@ -230,6 +264,11 @@ service_stop() {
   stop_yuki
   stop_rabbitmq
 }
+
+if [[ "$RABBITMQ_PORT" != 5672 ]]; then
+  echo "ERROR: packaged Yuki uses RabbitMQ on port 5672." >&2
+  exit 2
+fi
 
 case "${1:-}" in
   start) service_start ;;

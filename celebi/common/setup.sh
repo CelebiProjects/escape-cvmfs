@@ -4,6 +4,8 @@
 if [[ -n "${BASH_VERSION:-}" ]]; then
   _celebi_setup_source="${BASH_SOURCE[0]}"
 elif [[ -n "${ZSH_VERSION:-}" ]]; then
+  # Zsh uses this expansion to find the path of the sourced script.
+  # shellcheck disable=SC2296
   _celebi_setup_source="${(%):-%N}"
 else
   _celebi_setup_source="$0"
@@ -15,12 +17,21 @@ if [[ -z "${CELEBI_PYTHONBIN:-}" ]]; then
   if [[ -x "$_celebi_lcg_python" ]]; then
     export CELEBI_PYTHONBIN="$_celebi_lcg_python"
   elif command -v python3.11 >/dev/null 2>&1; then
-    export CELEBI_PYTHONBIN="$(command -v python3.11)"
+    CELEBI_PYTHONBIN="$(command -v python3.11)"
+    export CELEBI_PYTHONBIN
   else
     echo "ERROR: Celebi requires Python 3.11; neither LCG 107 nor python3.11 was found." >&2
     unset _celebi_root _celebi_lcg_python
+    # shellcheck disable=SC2317
     return 1 2>/dev/null || exit 1
   fi
+fi
+
+if ! "$CELEBI_PYTHONBIN" -I -c 'import sys; sys.exit(sys.version_info[:2] != (3, 11))'; then
+  echo "ERROR: Celebi requires Python 3.11; selected interpreter: $CELEBI_PYTHONBIN." >&2
+  unset _celebi_root _celebi_lcg_python _celebi_setup_source
+  # shellcheck disable=SC2317
+  return 1 2>/dev/null || exit 1
 fi
 
 case ":${PATH}:" in
@@ -35,6 +46,7 @@ case ":${PYTHONPATH:-}:" in
 esac
 
 export CELEBI_HOME="$_celebi_root"
-export CELEBI_VERSION="$(cat "${_celebi_root}/VERSION" 2>/dev/null || echo unknown)"
+CELEBI_VERSION="$(cat "${_celebi_root}/VERSION" 2>/dev/null || echo unknown)"
+export CELEBI_VERSION
 
 unset _celebi_root _celebi_lcg_python _celebi_site _celebi_setup_source
