@@ -1,6 +1,8 @@
 name: Build Celebi Tarball
 
 on:
+  push:
+    branches: [ci/el9-tarball-build]
   workflow_dispatch:
     inputs:
       celebi_ref:
@@ -30,14 +32,14 @@ jobs:
 
       - name: Validate source revision
         env:
-          SOURCE_REF: ${{ inputs.celebi_ref }}
+          SOURCE_REF: ${{ inputs.celebi_ref || 'f443f451dc84e4dd5893ce242c9e3dcb4e8e75e3' }}
         run: '[[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]]'
 
       - name: Checkout Celebi
         uses: actions/checkout@v4
         with:
           repository: CelebiProjects/Celebi
-          ref: ${{ inputs.celebi_ref }}
+          ref: ${{ inputs.celebi_ref || 'f443f451dc84e4dd5893ce242c9e3dcb4e8e75e3' }}
           path: source-celebi
 
       - name: Build tarball
